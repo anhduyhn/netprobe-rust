@@ -19,8 +19,9 @@ Copy `config.toml.sample` to `config.toml` and edit:
 
 ```toml
 [settings]
-poll_interval = 30        # seconds between automatic rescans
-connect_timeout_ms = 2000 # TCP connect timeout per port
+poll_interval = 30          # seconds between automatic rescans
+connect_timeout_ms = 2000   # TCP connect timeout per port
+max_concurrent_probes = 64  # max simultaneous TCP connects across the whole scan
 
 [[group]]
 name = "Servers"
@@ -33,6 +34,17 @@ hosts = [
 - `parent` displays the host indented beneath the named parent as a tree child. Children are grouped under their parent regardless of where they appear in the config. A `parent` that doesn't exist in the group, names itself, or is itself a child (one level of nesting only) logs a warning at startup — visible in the status bar and debug overlay (`d`) — and the host falls back to top-level display.
 - Startup also warns about duplicate host names within a group (they make `parent` references ambiguous) and duplicate IPs anywhere in the config (the same machine would be probed more than once). Duplicates are kept and still monitored.
 - A host is marked **Down** after two consecutive scans with no open ports, **Up** as soon as any port answers.
+
+### Scanning over a VPN
+
+Each scan opens one TCP connection per probed port per host. Fired all at once, that burst can overwhelm a constrained link such as a Citrix/SSL‑VPN tunnel, which drops connection attempts under load and makes hosts flap between up and down between scans. Two settings tame this:
+
+- `max_concurrent_probes` caps how many connects are in flight at once across the entire scan. The default of 64 suits a LAN; drop it to **16–32** on a flaky VPN to trade a little scan speed for stable results.
+- `connect_timeout_ms` should be raised (e.g. **3000–4000**) when VPN round‑trips are slow, so a real-but-slow response isn't counted as a closed port.
+
+The latency (`ms`) column shows the fastest port that answered, so you can compare a host's responsiveness on the curriculum network versus the VPN directly.
+
+Note that hosts only reachable from a specific network (e.g. DET‑managed servers behind the admin/VPN network) will always read **Down** from a network that can't route to them — that's expected, not a scan fault.
 
 ## Keybinds
 

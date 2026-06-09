@@ -10,8 +10,9 @@
 #                        indented beneath it as a tree child
 
 [settings]
-poll_interval = 30        # seconds between automatic rescans
-connect_timeout_ms = 2000 # TCP connect timeout per port
+poll_interval = 30          # seconds between automatic rescans
+connect_timeout_ms = 2000   # TCP connect timeout per port (raise to 3000-4000 over a VPN)
+max_concurrent_probes = 64  # max simultaneous TCP connects; lower to 16-32 on a flaky VPN
 
 [[group]]
 name = "Servers"

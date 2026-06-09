@@ -16,6 +16,13 @@ pub struct Settings {
     pub poll_interval: u64,
     #[serde(default = "default_timeout")]
     pub connect_timeout_ms: u64,
+    /// Maximum number of TCP connect attempts in flight at once, across all
+    /// hosts and ports. Caps the burst of simultaneous connections so a single
+    /// scan doesn't overwhelm a constrained link (e.g. a Citrix/SSL VPN tunnel),
+    /// which drops SYNs under load and makes hosts flap between up and down.
+    /// Lower it (16-32) on flaky VPNs; raise it on a fast LAN for quicker scans.
+    #[serde(default = "default_max_concurrent_probes")]
+    pub max_concurrent_probes: usize,
 }
 
 fn default_poll() -> u64 {
@@ -23,6 +30,9 @@ fn default_poll() -> u64 {
 }
 fn default_timeout() -> u64 {
     2000
+}
+fn default_max_concurrent_probes() -> usize {
+    64
 }
 
 #[derive(Debug, Deserialize)]

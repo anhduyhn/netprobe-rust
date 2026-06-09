@@ -4,7 +4,7 @@ mod network;
 mod ui;
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use app::{App, Group, Host};
 use color_eyre::Result;
@@ -14,11 +14,10 @@ use tokio::sync::mpsc;
 enum ScanEvent {
     /// Port scan result for a host, routed by stable host id.
     PortResult {
+        scan_id: u64,
         host_id: u64,
         result: network::ProbeResult,
     },
-    /// Scan cycle complete.
-    ScanDone,
 }
 
 #[tokio::main]
@@ -29,7 +28,11 @@ async fn main() -> Result<()> {
     let cfg = config::Config::load(&config_path)?;
 
     // Build app state from config.
-    let mut app = App::new(cfg.settings.poll_interval, cfg.settings.connect_timeout_ms);
+    let mut app = App::new(
+        cfg.settings.poll_interval,
+        cfg.settings.connect_timeout_ms,
+        cfg.settings.max_concurrent_probes,
+    );
 
     for group_cfg in &cfg.group {
         let hosts: Vec<Host> = group_cfg
@@ -65,6 +68,10 @@ async fn main() -> Result<()> {
     eprintln!(
         "Loaded {host_count} hosts in {group_count} groups from {}",
         config_path.display()
+    );
+    eprintln!(
+        "Concurrency cap: {} simultaneous connects; connect timeout {} ms",
+        app.max_concurrent_probes, app.connect_timeout_ms
     );
     for warning in &config_warnings {
         eprintln!("warning: {warning}");
@@ -129,7 +136,11 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
         // Drain events.
         while let Ok(event) = rx.try_recv() {
             match event {
-                ScanEvent::PortResult { host_id, result } => {
+                ScanEvent::PortResult {
+                    scan_id,
+                    host_id,
+                    result,
+                } => {
                     let debug = app.show_debug;
                     match app.find_host_mut(host_id) {
                         Some(host) => {
@@ -138,6 +149,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
                             } else {
                                 None
                             };
+                            // Late results from a superseded scan still carry
+                            // valid data, so always apply by stable host id.
                             result.apply(host);
                             if let Some((name, ports)) = summary {
                                 let status = host.status.symbol();
@@ -158,16 +171,29 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
                             app.log_debug(format!("PortResult id={host_id} DROPPED (no host)"));
                         }
                     }
+
+                    // Only the current scan's results count toward completion.
+                    if scan_id == app.current_scan && app.pending_results > 0 {
+                        app.pending_results -= 1;
+                        if app.pending_results == 0 {
+                            app.finish_scan();
+                        }
+                    }
                 }
-                ScanEvent::ScanDone => {
-                    if app.show_debug {
-                        app.log_debug("ScanDone");
-                    }
-                    app.is_scanning = false;
-                    app.last_poll = Some(chrono::Local::now());
-                    if app.status_message.as_deref() == Some("Rescanning...") {
-                        app.status_message = None;
-                    }
+            }
+        }
+
+        // Backstop: if results stall (a dropped task, a hung tunnel), don't
+        // leave the scan flagged as running forever — that would block every
+        // future periodic rescan.
+        if app.is_scanning {
+            if let Some(deadline) = app.scan_deadline {
+                if Instant::now() >= deadline {
+                    let missing = app.pending_results;
+                    app.log_debug(format!(
+                        "scan watchdog fired: {missing} result(s) never arrived"
+                    ));
+                    app.finish_scan();
                 }
             }
         }
@@ -186,6 +212,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
 
 /// Port scan all configured hosts.
 fn spawn_scan(app: &mut App, tx: &mpsc::UnboundedSender<ScanEvent>) {
+    app.current_scan += 1;
+    let scan_id = app.current_scan;
     app.is_scanning = true;
     let connect_timeout = Duration::from_millis(app.connect_timeout_ms);
 
@@ -200,25 +228,45 @@ fn spawn_scan(app: &mut App, tx: &mpsc::UnboundedSender<ScanEvent>) {
             let ip = host.ip.clone();
             let tx = tx.clone();
             let host_id = host.id;
+            let limiter = app.probe_limiter.clone();
             scanned += 1;
             tokio::spawn(async move {
-                let result = network::probe_host(&ip, connect_timeout).await;
-                let _ = tx.send(ScanEvent::PortResult { host_id, result });
+                let result = network::probe_host(&ip, connect_timeout, limiter).await;
+                let _ = tx.send(ScanEvent::PortResult {
+                    scan_id,
+                    host_id,
+                    result,
+                });
             });
         }
     }
+
+    app.pending_results = scanned;
+
+    // Generous backstop only — a real scan finishes when the last result lands.
+    // Worst case is every probe hitting the full timeout, run in concurrency-
+    // capped batches; double that and add slack so the watchdog never cuts a
+    // legitimately slow VPN scan short.
+    let total_probes = scanned * network::PROBE_PORT_COUNT;
+    let batches = total_probes.div_ceil(app.max_concurrent_probes.max(1)) as u32;
+    let budget = connect_timeout
+        .saturating_mul(batches.max(1))
+        .saturating_mul(2)
+        + Duration::from_secs(5);
+    app.scan_deadline = Some(Instant::now() + budget);
+
     if app.show_debug {
-        app.log_debug(format!("spawn_scan: {scanned} hosts"));
+        app.log_debug(format!(
+            "spawn_scan #{scan_id}: {scanned} hosts, cap={}, budget={}s",
+            app.max_concurrent_probes,
+            budget.as_secs()
+        ));
     }
 
-    // Signal completion after port scans finish.
-    let tx = tx.clone();
-    let host_count: usize = app.groups.iter().map(|g| g.hosts.len()).sum();
-    tokio::spawn(async move {
-        let wait = Duration::from_millis(2500 + (host_count as u64 * 30));
-        tokio::time::sleep(wait).await;
-        let _ = tx.send(ScanEvent::ScanDone);
-    });
+    // Nothing to scan: finish immediately so we don't sit flagged as scanning.
+    if scanned == 0 {
+        app.finish_scan();
+    }
 }
 
 fn resolve_config_path() -> PathBuf {

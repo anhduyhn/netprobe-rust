@@ -1,8 +1,11 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{DateTime, Local};
 use ratatui::widgets::TableState;
+use tokio::sync::Semaphore;
 
 /// Monotonic source of stable per-host ids. Used to route async scan results
 /// to the right host regardless of position in the host vectors.
@@ -216,8 +219,18 @@ pub struct App {
     pub should_quit: bool,
     pub poll_interval: u64,
     pub connect_timeout_ms: u64,
+    /// Caps simultaneous TCP connects across the whole scan.
+    pub probe_limiter: Arc<Semaphore>,
+    pub max_concurrent_probes: usize,
     pub last_poll: Option<DateTime<Local>>,
     pub is_scanning: bool,
+    /// Generation counter, bumped each scan, so late results from a superseded
+    /// scan don't affect completion tracking of the current one.
+    pub current_scan: u64,
+    /// Outstanding per-host results expected for the current scan.
+    pub pending_results: usize,
+    /// Backstop: force-finish a scan if results stop arriving past this point.
+    pub scan_deadline: Option<Instant>,
     pub show_help: bool,
     pub status_message: Option<String>,
     /// When true, the debug overlay (`d`) is shown and event logging is verbose.
@@ -227,7 +240,9 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(poll_interval: u64, connect_timeout_ms: u64) -> Self {
+    pub fn new(poll_interval: u64, connect_timeout_ms: u64, max_concurrent_probes: usize) -> Self {
+        // A zero cap would deadlock the semaphore; clamp to a sane minimum.
+        let max_concurrent_probes = max_concurrent_probes.max(1);
         Self {
             groups: Vec::new(),
             table_state: TableState::default(),
@@ -235,12 +250,28 @@ impl App {
             should_quit: false,
             poll_interval,
             connect_timeout_ms,
+            probe_limiter: Arc::new(Semaphore::new(max_concurrent_probes)),
+            max_concurrent_probes,
             last_poll: None,
             is_scanning: false,
+            current_scan: 0,
+            pending_results: 0,
+            scan_deadline: None,
             show_help: false,
             status_message: None,
             show_debug: false,
             debug_log: VecDeque::with_capacity(DEBUG_LOG_CAP),
+        }
+    }
+
+    /// Mark the in-progress scan finished and stamp the poll time.
+    pub fn finish_scan(&mut self) {
+        self.is_scanning = false;
+        self.pending_results = 0;
+        self.scan_deadline = None;
+        self.last_poll = Some(Local::now());
+        if self.status_message.as_deref() == Some("Rescanning...") {
+            self.status_message = None;
         }
     }
 
