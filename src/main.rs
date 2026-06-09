@@ -51,8 +51,9 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Validate parent references and order children beneath their parents.
-    let mut config_warnings: Vec<String> = Vec::new();
+    // Check for duplicate names/IPs, then validate parent references and
+    // order children beneath their parents.
+    let mut config_warnings: Vec<String> = cfg.validate();
     for group in &mut app.groups {
         config_warnings.extend(group.organise());
     }
