@@ -30,7 +30,7 @@ hosts = [
 ]
 ```
 
-- `parent` is cosmetic: the host displays indented beneath the named parent as a tree child.
+- `parent` displays the host indented beneath the named parent as a tree child. Children are grouped under their parent regardless of where they appear in the config. A `parent` that doesn't exist in the group, names itself, or is itself a child (one level of nesting only) logs a warning at startup — visible in the status bar and debug overlay (`d`) — and the host falls back to top-level display.
 - A host is marked **Down** after two consecutive scans with no open ports, **Up** as soon as any port answers.
 
 ## Keybinds

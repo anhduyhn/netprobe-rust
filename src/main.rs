@@ -51,6 +51,12 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Validate parent references and order children beneath their parents.
+    let mut config_warnings: Vec<String> = Vec::new();
+    for group in &mut app.groups {
+        config_warnings.extend(group.organise());
+    }
+
     app.rebuild_rows();
 
     let host_count: usize = app.groups.iter().map(|g| g.hosts.len()).sum();
@@ -59,6 +65,16 @@ async fn main() -> Result<()> {
         "Loaded {host_count} hosts in {group_count} groups from {}",
         config_path.display()
     );
+    for warning in &config_warnings {
+        eprintln!("warning: {warning}");
+        app.log_debug(format!("config warning: {warning}"));
+    }
+    if !config_warnings.is_empty() {
+        app.set_status(format!(
+            "{} config warning(s) — press d for details",
+            config_warnings.len()
+        ));
+    }
 
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app).await;

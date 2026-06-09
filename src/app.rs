@@ -118,6 +118,86 @@ pub struct Group {
     pub hosts: Vec<Host>,
 }
 
+impl Group {
+    /// Validate parent references and order hosts so each child sits directly
+    /// beneath its parent, regardless of config order. Only one level of
+    /// nesting is supported. Returns human-readable warnings for invalid
+    /// references; offending hosts fall back to top-level display.
+    pub fn organise(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        // Validate parent references first.
+        for i in 0..self.hosts.len() {
+            let Some(parent_name) = self.hosts[i].parent.clone() else {
+                continue;
+            };
+            let host_name = self.hosts[i].name.clone();
+
+            let invalid_reason = if parent_name.eq_ignore_ascii_case(&host_name) {
+                Some("cannot be its own parent".to_string())
+            } else {
+                match self
+                    .hosts
+                    .iter()
+                    .find(|h| h.name.eq_ignore_ascii_case(&parent_name))
+                {
+                    None => Some(format!(
+                        "parent '{parent_name}' not found in group '{}'",
+                        self.name
+                    )),
+                    Some(p) if p.parent.is_some() => Some(format!(
+                        "parent '{parent_name}' is itself a child (only one level of nesting is supported)"
+                    )),
+                    Some(_) => None,
+                }
+            };
+
+            if let Some(reason) = invalid_reason {
+                warnings.push(format!(
+                    "host '{host_name}': {reason}; showing at top level"
+                ));
+                self.hosts[i].is_child = false;
+                self.hosts[i].parent = None;
+            }
+        }
+
+        // Order: parents in config order, each followed by its children in
+        // config order.
+        let mut slots: Vec<Option<Host>> = std::mem::take(&mut self.hosts)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut ordered: Vec<Host> = Vec::with_capacity(slots.len());
+
+        for i in 0..slots.len() {
+            if slots[i].as_ref().is_none_or(|h| h.is_child) {
+                continue;
+            }
+            let parent = slots[i].take().expect("slot checked non-empty");
+            let parent_name = parent.name.clone();
+            ordered.push(parent);
+            for slot in slots.iter_mut() {
+                let is_mine = slot.as_ref().is_some_and(|h| {
+                    h.is_child
+                        && h.parent
+                            .as_deref()
+                            .is_some_and(|p| p.eq_ignore_ascii_case(&parent_name))
+                });
+                if is_mine {
+                    ordered.push(slot.take().expect("slot checked non-empty"));
+                }
+            }
+        }
+
+        // Defensive: anything unplaced (shouldn't happen after validation)
+        // keeps its config position at the end rather than vanishing.
+        ordered.extend(slots.into_iter().flatten());
+
+        self.hosts = ordered;
+        warnings
+    }
+}
+
 // ── Row reference for the flat table ────────────────────────────────────
 
 /// A row in the TUI table. Either a group header or a host entry.
@@ -263,5 +343,71 @@ impl App {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host(name: &str, parent: Option<&str>) -> Host {
+        let mut h = Host::from_config(name, "10.0.0.1");
+        if let Some(p) = parent {
+            h.is_child = true;
+            h.parent = Some(p.to_string());
+        }
+        h
+    }
+
+    fn names(group: &Group) -> Vec<&str> {
+        group.hosts.iter().map(|h| h.name.as_str()).collect()
+    }
+
+    #[test]
+    fn children_move_under_parent_regardless_of_config_order() {
+        let mut g = Group {
+            name: "test".into(),
+            hosts: vec![
+                host("VM1", Some("HOST2")),
+                host("HOST1", None),
+                host("HOST2", None),
+                host("VM2", Some("host1")), // parent match is case-insensitive
+            ],
+        };
+        let warnings = g.organise();
+        assert!(warnings.is_empty());
+        assert_eq!(names(&g), vec!["HOST1", "VM2", "HOST2", "VM1"]);
+    }
+
+    #[test]
+    fn missing_parent_warns_and_falls_back_to_top_level() {
+        let mut g = Group {
+            name: "test".into(),
+            hosts: vec![host("HOST1", None), host("VM1", Some("NOPE"))],
+        };
+        let warnings = g.organise();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("NOPE"));
+        assert!(!g.hosts[1].is_child);
+        assert_eq!(names(&g), vec!["HOST1", "VM1"]);
+    }
+
+    #[test]
+    fn nested_and_self_parents_are_rejected() {
+        let mut g = Group {
+            name: "test".into(),
+            hosts: vec![
+                host("A", None),
+                host("B", Some("A")),
+                host("C", Some("B")), // nested: B is itself a child
+                host("D", Some("D")), // self-parent
+            ],
+        };
+        let warnings = g.organise();
+        assert_eq!(warnings.len(), 2);
+        let by_name = |n: &str| g.hosts.iter().find(|h| h.name == n).unwrap();
+        assert!(!by_name("C").is_child);
+        assert!(!by_name("D").is_child);
+        assert_eq!(names(&g), vec!["A", "B", "C", "D"]);
     }
 }
