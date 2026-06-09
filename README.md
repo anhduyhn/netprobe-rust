@@ -31,7 +31,8 @@ hosts = [
 ]
 ```
 
-- `parent` displays the host indented beneath the named parent as a tree child. Children are grouped under their parent regardless of where they appear in the config. A `parent` that doesn't exist in the group, names itself, or is itself a child (one level of nesting only) logs a warning at startup — visible in the status bar and debug overlay (`d`) — and the host falls back to top-level display.
+- Hosts are displayed alphabetically by name (case-insensitive) within each group, regardless of config order. Groups stay in config order.
+- `parent` displays the host indented beneath the named parent as a tree child. Children are grouped under their parent and sorted alphabetically among themselves, regardless of where they appear in the config. A `parent` that doesn't exist in the group, names itself, or is itself a child (one level of nesting only) logs a warning at startup — visible in the status bar and debug overlay (`d`) — and the host falls back to top-level display.
 - Startup also warns about duplicate host names within a group (they make `parent` references ambiguous) and duplicate IPs anywhere in the config (the same machine would be probed more than once). Duplicates are kept and still monitored.
 - A host is marked **Down** after two consecutive scans with no open ports, **Up** as soon as any port answers.
 - `ports` (optional, under `[settings]`) overrides the list of TCP ports probed on every host — used for both the up/down decision and role inference. When unset, a built-in default list is used. The startup banner prints the active list.

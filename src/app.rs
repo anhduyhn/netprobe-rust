@@ -164,37 +164,35 @@ impl Group {
             }
         }
 
-        // Order: parents in config order, each followed by its children in
-        // config order.
-        let mut slots: Vec<Option<Host>> = std::mem::take(&mut self.hosts)
-            .into_iter()
-            .map(Some)
-            .collect();
-        let mut ordered: Vec<Host> = Vec::with_capacity(slots.len());
+        // Order: top-level hosts alphabetically, each immediately followed by
+        // its children alphabetically. Case-insensitive, so neither config
+        // order nor casing affects how the table reads.
+        let name_key = |h: &Host| h.name.to_ascii_lowercase();
 
-        for i in 0..slots.len() {
-            if slots[i].as_ref().is_none_or(|h| h.is_child) {
-                continue;
-            }
-            let parent = slots[i].take().expect("slot checked non-empty");
-            let parent_name = parent.name.clone();
+        let (mut top, mut children): (Vec<Host>, Vec<Host>) =
+            std::mem::take(&mut self.hosts)
+                .into_iter()
+                .partition(|h| !h.is_child);
+        top.sort_by_key(name_key);
+        children.sort_by_key(name_key);
+
+        let mut ordered: Vec<Host> = Vec::with_capacity(top.len() + children.len());
+        for parent in top {
+            let parent_key = name_key(&parent);
             ordered.push(parent);
-            for slot in slots.iter_mut() {
-                let is_mine = slot.as_ref().is_some_and(|h| {
-                    h.is_child
-                        && h.parent
-                            .as_deref()
-                            .is_some_and(|p| p.eq_ignore_ascii_case(&parent_name))
-                });
-                if is_mine {
-                    ordered.push(slot.take().expect("slot checked non-empty"));
-                }
-            }
+            // Children are already in name order; partition keeps that order.
+            let (mine, rest): (Vec<Host>, Vec<Host>) = children.into_iter().partition(|c| {
+                c.parent
+                    .as_deref()
+                    .is_some_and(|p| p.eq_ignore_ascii_case(&parent_key))
+            });
+            ordered.extend(mine);
+            children = rest;
         }
 
-        // Defensive: anything unplaced (shouldn't happen after validation)
-        // keeps its config position at the end rather than vanishing.
-        ordered.extend(slots.into_iter().flatten());
+        // Defensive: any child whose parent disappeared (shouldn't happen after
+        // validation) is appended rather than dropped.
+        ordered.extend(children);
 
         self.hosts = ordered;
         warnings
@@ -419,6 +417,23 @@ mod tests {
     }
 
     #[test]
+    fn hosts_are_name_sorted_with_children_under_parents() {
+        let mut g = Group {
+            name: "test".into(),
+            hosts: vec![
+                host("zeta", None),
+                host("Alpha", None),
+                host("mike", Some("zeta")),
+                host("bravo", Some("Zeta")), // case-insensitive parent + sort
+            ],
+        };
+        let warnings = g.organise();
+        assert!(warnings.is_empty());
+        // Top level alphabetical (Alpha, zeta); children alphabetical under zeta.
+        assert_eq!(names(&g), vec!["Alpha", "zeta", "bravo", "mike"]);
+    }
+
+    #[test]
     fn missing_parent_warns_and_falls_back_to_top_level() {
         let mut g = Group {
             name: "test".into(),
@@ -447,6 +462,7 @@ mod tests {
         let by_name = |n: &str| g.hosts.iter().find(|h| h.name == n).unwrap();
         assert!(!by_name("C").is_child);
         assert!(!by_name("D").is_child);
+        // A (top) + its child B, then demoted-to-top C and D, all alphabetical.
         assert_eq!(names(&g), vec!["A", "B", "C", "D"]);
     }
 }
