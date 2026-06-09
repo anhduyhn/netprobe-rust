@@ -1,0 +1,5 @@
+/target/
+*.rs.bk
+*:Zone.Identifier
+config.toml
+*.password
