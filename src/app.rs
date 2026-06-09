@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::{DateTime, Local};
 use ratatui::widgets::TableState;
 
-/// Monotonic source of stable per-host ids. Used to route async scan results to
-/// the right host even after `merge_vms_into_group` reorders the host vectors.
+/// Monotonic source of stable per-host ids. Used to route async scan results
+/// to the right host regardless of position in the host vectors.
 static NEXT_HOST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Max number of debug log lines retained in the ring buffer.
@@ -38,37 +38,32 @@ pub struct Host {
     pub id: u64,
     pub name: String,
     pub ip: String,
-    pub is_hyperv: bool,
     pub status: HostStatus,
     pub open_ports: Vec<u16>,
     pub latency_ms: Option<u64>,
     pub last_seen: Option<DateTime<Local>>,
     pub last_checked: Option<DateTime<Local>>,
     pub consecutive_failures: u32,
-    /// If this host is a VM discovered from a Hyper-V query.
-    pub is_child_vm: bool,
-    /// Name of the parent Hyper-V host (for tree ordering).
-    pub parent_host: Option<String>,
-    /// Hyper-V state string (Running, Off, etc.) from VM query.
-    pub vm_state: Option<String>,
+    /// Display this host indented under its parent (set from config).
+    pub is_child: bool,
+    /// Name of the parent host (cosmetic tree grouping from config).
+    pub parent: Option<String>,
 }
 
 impl Host {
-    pub fn from_config(name: &str, ip: &str, role: Option<&str>) -> Self {
+    pub fn from_config(name: &str, ip: &str) -> Self {
         Self {
             id: NEXT_HOST_ID.fetch_add(1, Ordering::Relaxed),
             name: name.to_string(),
             ip: ip.to_string(),
-            is_hyperv: role == Some("hyperv"),
             status: HostStatus::Unknown,
             open_ports: Vec::new(),
             latency_ms: None,
             last_seen: None,
             last_checked: None,
             consecutive_failures: 0,
-            is_child_vm: false,
-            parent_host: None,
-            vm_state: None,
+            is_child: false,
+            parent: None,
         }
     }
 
@@ -92,13 +87,13 @@ impl Host {
         }
     }
 
+    /// Infer a role label from the set of open ports.
     pub fn role_label(&self) -> &str {
-        if self.is_hyperv {
-            return "Hyper-V";
-        }
         let has = |p: u16| self.open_ports.contains(&p);
         if has(88) && has(389) {
             "DC"
+        } else if has(2179) {
+            "Hyper-V"
         } else if has(10123) {
             "SCCM"
         } else if has(7001) {
@@ -120,9 +115,7 @@ impl Host {
 #[derive(Debug)]
 pub struct Group {
     pub name: String,
-    pub credential_key: Option<String>,
     pub hosts: Vec<Host>,
-    pub vm_query_done: bool,
 }
 
 // ── Row reference for the flat table ────────────────────────────────────

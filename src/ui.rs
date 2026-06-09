@@ -110,16 +110,9 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                     HostStatus::Unknown => Style::default().fg(Color::DarkGray),
                 };
 
-                let name_prefix = if host.is_child_vm { "  └ " } else { "" };
+                let name_prefix = if host.is_child { "  └ " } else { "" };
 
-                let vm_state_suffix = host
-                    .vm_state
-                    .as_ref()
-                    .filter(|s| *s != "Running")
-                    .map(|s| format!(" [{s}]"))
-                    .unwrap_or_default();
-
-                let name_display = format!("{name_prefix}{}{vm_state_suffix}", host.name);
+                let name_display = format!("{name_prefix}{}", host.name);
 
                 let latency = host
                     .latency_ms
@@ -200,12 +193,6 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                 .map(|t| t.format("%H:%M:%S").to_string())
                 .unwrap_or_else(|| "never".into());
 
-            let vm_info = host
-                .vm_state
-                .as_ref()
-                .map(|s| format!("  │  VM state: {s}"))
-                .unwrap_or_default();
-
             vec![
                 Line::from(vec![
                     Span::styled("Host: ", Style::default().fg(Color::DarkGray)),
@@ -215,7 +202,6 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                         format!("  id={}", host.id),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::raw(vm_info),
                 ]),
                 Line::from(vec![
                     Span::styled("Ports: ", Style::default().fg(Color::DarkGray)),
@@ -269,13 +255,7 @@ fn draw_debug(frame: &mut Frame, app: &App, area: Rect) {
 
     for (gi, group) in app.groups.iter().enumerate() {
         lines.push(Line::from(Span::styled(
-            format!(
-                " group[{gi}] {:<28} cred={:?} hosts={} vm_query_done={}",
-                group.name,
-                group.credential_key,
-                group.hosts.len(),
-                group.vm_query_done,
-            ),
+            format!(" group[{gi}] {:<28} hosts={}", group.name, group.hosts.len()),
             Style::default().fg(Color::Cyan),
         )));
     }
@@ -323,8 +303,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from(" Edit config.toml to add/remove hosts and groups."),
-        Line::from(" Set credential passwords via env vars, files, or config.toml."),
-        Line::from(" Hosts with role = \"hyperv\" auto-query for VM inventory."),
+        Line::from(" Roles are inferred from open ports (e.g. 88+389 = DC)."),
     ];
 
     let block = Block::default()

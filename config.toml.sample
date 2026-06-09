@@ -1,65 +1,28 @@
 # netprobe config sample
-# Copy this file to config.toml and fill in your local credentials.
+# Copy this file to config.toml and edit for your site.
 #
-# Passwords can be loaded from an environment variable, a password file, or
-# directly from config.toml. Environment variables win if more than one is set.
-#
-# Environment variable example:
-#   $env:NETPROBE_SCHOOL_PW = "password"
-#   $env:NETPROBE_DET_PW = "password"
-#
-# Config examples:
-#   password_env = "NETPROBE_SCHOOL_PW"
-#   password_file = "school.password"
-#   password = "password"
-
-[settings]
-poll_interval = 30
-connect_timeout_ms = 2000
-
-# Keep DET-managed and school-managed credentials separate so each group uses
-# the right admin realm.
-[credentials.school]
-username = "SCHOOLDOMAIN\\admin-user"
-password_env = "NETPROBE_SCHOOL_PW"
-# password_file = "school.password"
-# password = "school-password"
-
-[credentials.det]
-username = "DETDOMAIN\\admin-user"
-password_env = "NETPROBE_DET_PW"
-# password_file = "det.password"
-# password = "det-password"
-
-# Groups organise hosts in the TUI.
-# Each group has a name, an optional credential reference for Hyper-V queries,
-# and a list of hosts.
+# Groups organise hosts in the TUI. Each group has a name and a list of hosts.
 #
 # Host fields:
 #   name    (required) - display name
 #   ip      (required) - IPv4 address
-#   role    (optional) - "hyperv" triggers VM inventory query using the group credential
-#   parent  (optional) - name of parent Hyper-V host, displays as child VM with tree prefix
+#   parent  (optional) - name of another host in the group; displays this host
+#                        indented beneath it as a tree child
+
+[settings]
+poll_interval = 30        # seconds between automatic rescans
+connect_timeout_ms = 2000 # TCP connect timeout per port
 
 [[group]]
-name = "DET Managed"
-credential = "det"
+name = "Servers"
 hosts = [
-    { name = "DET-HOST01", ip = "10.0.0.10", role = "hyperv" },
-    { name = "DET-HOST02", ip = "10.0.0.11", role = "hyperv" },
-]
-
-[[group]]
-name = "School Infra"
-credential = "school"
-hosts = [
-    { name = "SCHOOL-HV01", ip = "10.0.1.10", role = "hyperv" },
-    { name = "SCHOOL-DC01", ip = "10.0.1.20" },
-    { name = "SCHOOL-SCCM", ip = "10.0.1.21" },
+    { name = "HOST01", ip = "10.0.0.10" },
+    { name = "VM-DC1", ip = "10.0.0.11", parent = "HOST01" },
+    { name = "VM-FS1", ip = "10.0.0.12", parent = "HOST01" },
 ]
 
 [[group]]
 name = "Monitoring & Cameras"
 hosts = [
-    { name = "NXWITNESS01", ip = "10.0.2.10" },
+    { name = "NVR01", ip = "10.0.0.50" },
 ]

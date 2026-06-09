@@ -1,94 +1,70 @@
 # netprobe
 
-Network discovery and monitoring TUI for school IT environments. Designed for roaming support technicians who need fast visibility into unfamiliar networks.
+A simple config-driven TCP port monitoring TUI for school IT environments. Reads a list of hosts from `config.toml`, probes a fixed set of well-known ports on each, and shows up/down status, latency, open ports, and an inferred role in a terminal table.
+
+No credentials, no remote execution, no network discovery — it only opens outbound TCP connections to the hosts you list.
 
 ## Quick start
 
 ```
 cargo build --release
-./target/release/netprobe
+./target/release/netprobe [path/to/config.toml]
 ```
 
-No configuration needed. The tool auto-detects the local subnet, sweeps for devices, and classifies everything it finds.
+With no argument, netprobe looks for `config.toml` in the current directory, then next to the executable.
 
-## Credentials
+## Configuration
 
-Hyper-V VM inventory uses the credential assigned to each group in `config.toml`.
-This project keeps separate credential sets for school-managed infrastructure
-and DET-managed infrastructure, so the right account is used for the right
-hosts. Each credential can load its password from `password_env`,
-`password_file`, or `password`. Environment variables take precedence, then
-password files, then the plain config value.
-
-Hyper-V inventory also requires PowerShell and WinRM access from the machine
-running `netprobe`.
-Credential prompts are not used; Hyper-V queries only use the configured
-credential values and report an error if those do not work.
+Copy `config.toml.sample` to `config.toml` and edit:
 
 ```toml
-[credentials.school]
-username = "DOMAIN\\admin"
-password_env = "NETPROBE_SCHOOL_PW"
-# password_file = "school.password"
-# password = "password"
+[settings]
+poll_interval = 30        # seconds between automatic rescans
+connect_timeout_ms = 2000 # TCP connect timeout per port
 
-[credentials.det]
-username = "DETNSW\\svc-techname"
-password_env = "NETPROBE_DET_PW"
-# password_file = "det.password"
-# password = "password"
+[[group]]
+name = "Servers"
+hosts = [
+    { name = "HOST01", ip = "10.0.0.10" },
+    { name = "VM-DC1", ip = "10.0.0.11", parent = "HOST01" },
+]
 ```
 
-## What it does
-
-1. **Detects your local subnet** from the active NIC
-2. **ARP sweep** to discover all devices on the segment
-3. **MAC OUI classification** to separate VMs, switches, APs, printers, and workstations
-4. **TCP port fingerprinting** to identify DCs, Hyper-V hosts, SCCM, NX Witness, web servers
-5. **NetBIOS name query** (UDP 137, no authentication) to get hostnames and domain membership
-6. **Credential realm detection** to flag DET-managed hosts (####HOST## pattern) so you don't fire school creds at the wrong domain
+- `parent` is cosmetic: the host displays indented beneath the named parent as a tree child.
+- A host is marked **Down** after two consecutive scans with no open ports, **Up** as soon as any port answers.
 
 ## Keybinds
 
 | Key | Action |
 |-----|--------|
-| ↑/k, ↓/j | Navigate devices |
-| v | Cycle view: All → Infra → VMs |
+| ↑/k, ↓/j | Navigate hosts |
 | r | Force full rescan |
-| s | Save current state as site profile |
 | d | Toggle debug overlay (internal state + event log) |
 | Shift-D | Clear the debug event log |
 | ? | Toggle help |
 | q / Esc | Quit |
 
-## Site profiles
+## Probed ports and role inference
 
-Press `s` to save the current network state. Next time you visit the same school, netprobe auto-matches your subnet to the saved profile and loads your labels, notes, and pinned devices.
+Each host is probed on: 53, 80, 88, 135, 389, 443, 445, 636, 2179, 3389, 4660, 5985, 5986, 7001, 9100, 10123. A role label is inferred from what answers:
 
-Profiles are stored in:
-- Linux/Mac: `~/.config/netprobe/sites/`
-- Windows: `%APPDATA%/netprobe/sites/`
-
-## Role detection ports
-
-| Port | Role |
+| Open ports | Role |
 |------|------|
 | 88 + 389 | Domain Controller |
 | 2179 | Hyper-V Host |
 | 10123 | SCCM Server |
 | 7001 | NX Witness VMS |
-| 80/443 | Web Server |
-| 9100/631 | Print Server |
-| 5985/5986 | WinRM |
+| 9100 / 631 | Print Server |
+| 80 / 443 | Web Server |
+| 5985 | WinRM |
 
-## Device classes (via MAC OUI)
+## Building for Windows from WSL
 
-| Code | Meaning |
-|------|---------|
-| VM | Hyper-V or VMware virtual machine |
-| SW | Network switch (Cisco, Aruba, Ubiquiti) |
-| AP | Wireless access point |
-| PRT | Printer (Ricoh, Canon, Xerox, Kyocera, Brother) |
-| WS | Physical workstation (Dell, HP, Lenovo) |
-| SRV | Physical server (HPE) |
-| FW | Firewall (FortiNet, SonicWall) |
+`scripts/build-windows.sh` cross-compiles a native Windows executable (target `x86_64-pc-windows-gnu`) and deploys it to `C:\network-tools\netprobe.exe`. It is wired to a local `pre-push` git hook so every push rebuilds and redeploys; a failed build aborts the push.
+
+Requirements inside WSL:
+
+```
+rustup target add x86_64-pc-windows-gnu
+sudo apt install gcc-mingw-w64-x86-64
+```
