@@ -27,11 +27,26 @@ async fn main() -> Result<()> {
     let config_path = resolve_config_path();
     let cfg = config::Config::load(&config_path)?;
 
+    // Resolve the probe port list: an explicit non-empty `ports` from config,
+    // otherwise the built-in default.
+    let ports_overridden = cfg
+        .settings
+        .ports
+        .as_ref()
+        .is_some_and(|p| !p.is_empty());
+    let probe_ports = cfg
+        .settings
+        .ports
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(network::default_ports);
+
     // Build app state from config.
     let mut app = App::new(
         cfg.settings.poll_interval,
         cfg.settings.connect_timeout_ms,
         cfg.settings.max_concurrent_probes,
+        probe_ports,
     );
 
     for group_cfg in &cfg.group {
@@ -72,6 +87,20 @@ async fn main() -> Result<()> {
     eprintln!(
         "Concurrency cap: {} simultaneous connects; connect timeout {} ms",
         app.max_concurrent_probes, app.connect_timeout_ms
+    );
+    eprintln!(
+        "Probing {} ports{}: {}",
+        app.probe_ports.len(),
+        if ports_overridden {
+            " (from config)"
+        } else {
+            " (default)"
+        },
+        app.probe_ports
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     );
     for warning in &config_warnings {
         eprintln!("warning: {warning}");
@@ -229,9 +258,10 @@ fn spawn_scan(app: &mut App, tx: &mpsc::UnboundedSender<ScanEvent>) {
             let tx = tx.clone();
             let host_id = host.id;
             let limiter = app.probe_limiter.clone();
+            let ports = app.probe_ports.clone();
             scanned += 1;
             tokio::spawn(async move {
-                let result = network::probe_host(&ip, connect_timeout, limiter).await;
+                let result = network::probe_host(&ip, connect_timeout, limiter, ports).await;
                 let _ = tx.send(ScanEvent::PortResult {
                     scan_id,
                     host_id,
@@ -247,7 +277,7 @@ fn spawn_scan(app: &mut App, tx: &mpsc::UnboundedSender<ScanEvent>) {
     // Worst case is every probe hitting the full timeout, run in concurrency-
     // capped batches; double that and add slack so the watchdog never cuts a
     // legitimately slow VPN scan short.
-    let total_probes = scanned * network::PROBE_PORT_COUNT;
+    let total_probes = scanned * app.probe_ports.len();
     let batches = total_probes.div_ceil(app.max_concurrent_probes.max(1)) as u32;
     let budget = connect_timeout
         .saturating_mul(batches.max(1))

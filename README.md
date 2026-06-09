@@ -34,6 +34,17 @@ hosts = [
 - `parent` displays the host indented beneath the named parent as a tree child. Children are grouped under their parent regardless of where they appear in the config. A `parent` that doesn't exist in the group, names itself, or is itself a child (one level of nesting only) logs a warning at startup — visible in the status bar and debug overlay (`d`) — and the host falls back to top-level display.
 - Startup also warns about duplicate host names within a group (they make `parent` references ambiguous) and duplicate IPs anywhere in the config (the same machine would be probed more than once). Duplicates are kept and still monitored.
 - A host is marked **Down** after two consecutive scans with no open ports, **Up** as soon as any port answers.
+- `ports` (optional, under `[settings]`) overrides the list of TCP ports probed on every host — used for both the up/down decision and role inference. When unset, a built-in default list is used. The startup banner prints the active list.
+
+### Liveness false positives (intercepted ports)
+
+netprobe marks a host **Up** as soon as *any* probed port completes a TCP handshake. On some networks a security appliance accepts connections to a port for *every* address — a DNS firewall answering TCP/53 is the common one — so a shut-down host whose only "open" port is the intercepted one still looks online. You can confirm interception by probing a deliberately nonexistent IP: if `Test-NetConnection -Port 53 10.99.99.99` succeeds, that port is intercepted and is not a reliable liveness signal. Drop it from the probe list:
+
+```toml
+[settings]
+# default list minus 53
+ports = [80, 88, 135, 389, 443, 445, 636, 2179, 3389, 4660, 5985, 5986, 7001, 9100, 10123]
+```
 
 ### Scanning over a VPN
 

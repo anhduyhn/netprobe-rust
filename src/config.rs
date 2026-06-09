@@ -23,6 +23,12 @@ pub struct Settings {
     /// Lower it (16-32) on flaky VPNs; raise it on a fast LAN for quicker scans.
     #[serde(default = "default_max_concurrent_probes")]
     pub max_concurrent_probes: usize,
+    /// TCP ports probed on every host, for both liveness and role detection.
+    /// When unset, a built-in default list is used. Set this to override it —
+    /// e.g. to drop port 53 on networks where a DNS firewall accepts TCP/53 for
+    /// every address, which otherwise makes shut-down hosts appear online.
+    #[serde(default)]
+    pub ports: Option<Vec<u16>>,
 }
 
 fn default_poll() -> u64 {

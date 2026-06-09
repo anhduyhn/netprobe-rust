@@ -13,6 +13,10 @@
 poll_interval = 30          # seconds between automatic rescans
 connect_timeout_ms = 2000   # TCP connect timeout per port (raise to 3000-4000 over a VPN)
 max_concurrent_probes = 64  # max simultaneous TCP connects; lower to 16-32 on a flaky VPN
+# ports = [80, 88, 135, 389, 443, 445, 636, 2179, 3389, 5985, 5986, 7001, 9100, 10123]
+#   Override the probed TCP ports (liveness + role detection). Defaults to a
+#   built-in list. Drop a port here if a firewall accepts it for every address
+#   (e.g. an intercepted TCP/53) and makes shut-down hosts look online.
 
 [[group]]
 name = "Servers"

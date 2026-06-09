@@ -222,6 +222,8 @@ pub struct App {
     /// Caps simultaneous TCP connects across the whole scan.
     pub probe_limiter: Arc<Semaphore>,
     pub max_concurrent_probes: usize,
+    /// TCP ports probed on each host (from config, or the built-in default).
+    pub probe_ports: Arc<Vec<u16>>,
     pub last_poll: Option<DateTime<Local>>,
     pub is_scanning: bool,
     /// Generation counter, bumped each scan, so late results from a superseded
@@ -240,7 +242,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(poll_interval: u64, connect_timeout_ms: u64, max_concurrent_probes: usize) -> Self {
+    pub fn new(
+        poll_interval: u64,
+        connect_timeout_ms: u64,
+        max_concurrent_probes: usize,
+        probe_ports: Vec<u16>,
+    ) -> Self {
         // A zero cap would deadlock the semaphore; clamp to a sane minimum.
         let max_concurrent_probes = max_concurrent_probes.max(1);
         Self {
@@ -252,6 +259,7 @@ impl App {
             connect_timeout_ms,
             probe_limiter: Arc::new(Semaphore::new(max_concurrent_probes)),
             max_concurrent_probes,
+            probe_ports: Arc::new(probe_ports),
             last_poll: None,
             is_scanning: false,
             current_scan: 0,

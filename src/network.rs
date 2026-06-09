@@ -8,8 +8,10 @@ use tokio::time::timeout;
 
 use crate::app::{Host, HostStatus};
 
-/// Ports to probe for role detection.
-const PROBE_PORTS: &[u16] = &[
+/// Default ports to probe for liveness and role detection. Overridable via the
+/// `ports` setting in config.toml (e.g. to drop 53 on networks where a DNS
+/// firewall accepts TCP/53 for every address and makes dead hosts look up).
+const DEFAULT_PROBE_PORTS: &[u16] = &[
     53,    // DNS
     80,    // HTTP
     88,    // Kerberos
@@ -28,8 +30,10 @@ const PROBE_PORTS: &[u16] = &[
     10123, // SCCM
 ];
 
-/// Number of ports probed per host. Used to size scan budgets.
-pub const PROBE_PORT_COUNT: usize = PROBE_PORTS.len();
+/// The built-in probe port list, used when config.toml does not set `ports`.
+pub fn default_ports() -> Vec<u16> {
+    DEFAULT_PROBE_PORTS.to_vec()
+}
 
 /// Try to connect to one port. Returns the connect duration if it succeeded.
 async fn probe_port(ip: &str, port: u16, connect_timeout: Duration) -> Option<Duration> {
@@ -51,9 +55,10 @@ pub async fn probe_host(
     ip: &str,
     connect_timeout: Duration,
     limiter: Arc<Semaphore>,
+    ports: Arc<Vec<u16>>,
 ) -> ProbeResult {
-    let mut handles = Vec::with_capacity(PROBE_PORTS.len());
-    for &port in PROBE_PORTS {
+    let mut handles = Vec::with_capacity(ports.len());
+    for &port in ports.iter() {
         let ip = ip.to_string();
         let limiter = Arc::clone(&limiter);
         handles.push(tokio::spawn(async move {
