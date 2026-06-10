@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
     Frame,
 };
 
@@ -13,27 +13,44 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // header
+            Constraint::Length(1), // tab bar
             Constraint::Min(10),   // table
             Constraint::Length(6), // detail
         ])
         .split(frame.area());
 
     draw_header(frame, app, chunks[0]);
+    draw_tabs(frame, app, chunks[1]);
 
     if app.show_debug {
-        draw_debug(frame, app, chunks[1]);
+        draw_debug(frame, app, chunks[2]);
     } else if app.show_help {
-        draw_help(frame, chunks[1]);
+        draw_help(frame, chunks[2]);
     } else {
-        draw_table(frame, app, chunks[1]);
+        draw_table(frame, app, chunks[2]);
     }
 
-    draw_detail(frame, app, chunks[2]);
+    draw_detail(frame, app, chunks[3]);
+}
+
+fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
+    let titles: Vec<Line> = app.tabs.iter().map(|t| Line::from(format!(" {t} "))).collect();
+    let tabs = Tabs::new(titles)
+        .select(app.active_tab)
+        .style(Style::default().fg(Color::DarkGray))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .divider("");
+    frame.render_widget(tabs, area);
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let (up, down, unknown) = app.counts();
-    let total: usize = app.groups.iter().map(|g| g.hosts.len()).sum();
+    let total = app.visible_host_count();
     let scan_text = if app.is_scanning { " scanning..." } else { "" };
     let poll_text = app
         .last_poll
@@ -217,7 +234,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         None => vec![Line::from("Select a host")],
     };
 
-    let keybinds = " ↑↓ nav │ r rescan │ d debug │ ? help │ q quit ";
+    let keybinds = " ↑↓ nav │ ←→ tab │ r rescan │ d debug │ ? help │ q quit ";
     let block = Block::default().borders(Borders::ALL).title(keybinds);
     frame.render_widget(
         Paragraph::new(content)
@@ -290,7 +307,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(" ↑/k, ↓/j    Navigate"),
+        Line::from(" ↑/k, ↓/j    Navigate hosts"),
+        Line::from(" ←/h, →/l    Switch group tab (All + one per group)"),
+        Line::from(" Tab/Shift-Tab  Switch group tab"),
         Line::from(" r           Force rescan all hosts"),
         Line::from(" d           Toggle debug overlay (internal state + event log)"),
         Line::from(" Shift-D     Clear the debug event log"),

@@ -233,6 +233,10 @@ pub struct App {
     pub scan_deadline: Option<Instant>,
     pub show_help: bool,
     pub status_message: Option<String>,
+    /// Tab labels: "All" followed by each group name.
+    pub tabs: Vec<String>,
+    /// Active tab: 0 = All, otherwise group index + 1.
+    pub active_tab: usize,
     /// When true, the debug overlay (`d`) is shown and event logging is verbose.
     pub show_debug: bool,
     /// Ring buffer of recent internal events, newest last.
@@ -265,9 +269,54 @@ impl App {
             scan_deadline: None,
             show_help: false,
             status_message: None,
+            tabs: vec!["All".to_string()],
+            active_tab: 0,
             show_debug: false,
             debug_log: VecDeque::with_capacity(DEBUG_LOG_CAP),
         }
+    }
+
+    /// Build the tab list ("All" + each group name). Call after groups load.
+    pub fn build_tabs(&mut self) {
+        self.tabs = std::iter::once("All".to_string())
+            .chain(self.groups.iter().map(|g| g.name.clone()))
+            .collect();
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = 0;
+        }
+    }
+
+    pub fn next_tab(&mut self) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        self.active_tab = (self.active_tab + 1) % self.tabs.len();
+        self.table_state.select(None);
+        self.rebuild_rows();
+    }
+
+    pub fn prev_tab(&mut self) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        self.active_tab = if self.active_tab == 0 {
+            self.tabs.len() - 1
+        } else {
+            self.active_tab - 1
+        };
+        self.table_state.select(None);
+        self.rebuild_rows();
+    }
+
+    /// Hosts shown under the active tab.
+    pub fn visible_host_count(&self) -> usize {
+        let active = self.active_tab;
+        self.groups
+            .iter()
+            .enumerate()
+            .filter(|(gi, _)| active == 0 || active == gi + 1)
+            .map(|(_, g)| g.hosts.len())
+            .sum()
     }
 
     /// Mark the in-progress scan finished and stamp the poll time.
@@ -301,10 +350,18 @@ impl App {
     /// Rebuild the flat row list from groups. Call after any structural change.
     pub fn rebuild_rows(&mut self) {
         self.rows.clear();
+        // On a single-group tab the tab label already names the group, so the
+        // header row is redundant; keep headers only on the "All" tab.
+        let show_headers = self.active_tab == 0;
         for (gi, group) in self.groups.iter().enumerate() {
-            self.rows.push(TableRow::GroupHeader {
-                name: group.name.clone(),
-            });
+            if !(self.active_tab == 0 || self.active_tab == gi + 1) {
+                continue;
+            }
+            if show_headers {
+                self.rows.push(TableRow::GroupHeader {
+                    name: group.name.clone(),
+                });
+            }
             for (hi, _host) in group.hosts.iter().enumerate() {
                 self.rows.push(TableRow::HostEntry {
                     group_idx: gi,
@@ -362,19 +419,24 @@ impl App {
         self.table_state.select(Some(i));
     }
 
+    /// Up / down / unknown counts for the hosts under the active tab.
     pub fn counts(&self) -> (usize, usize, usize) {
-        let all_hosts = self.groups.iter().flat_map(|g| &g.hosts);
-        let up = all_hosts
+        let active = self.active_tab;
+        let visible = self
+            .groups
+            .iter()
+            .enumerate()
+            .filter(move |(gi, _)| active == 0 || active == gi + 1)
+            .flat_map(|(_, g)| g.hosts.iter());
+        let up = visible
             .clone()
             .filter(|h| h.status == HostStatus::Up)
             .count();
-        let down = all_hosts
+        let down = visible
             .clone()
             .filter(|h| h.status == HostStatus::Down)
             .count();
-        let unknown = all_hosts
-            .filter(|h| h.status == HostStatus::Unknown)
-            .count();
+        let unknown = visible.filter(|h| h.status == HostStatus::Unknown).count();
         (up, down, unknown)
     }
 

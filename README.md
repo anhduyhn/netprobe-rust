@@ -32,6 +32,7 @@ hosts = [
 ```
 
 - Hosts are displayed alphabetically by name (case-insensitive) within each group, regardless of config order. Groups stay in config order.
+- A tab bar (one tab per group, plus **All**) lets you focus on a single group with ←/→ or Tab. The header up/down/unknown counts reflect the active tab, so groups that are expected to be unreachable from your current network (e.g. DET-managed hosts when you're on the curriculum network) can be kept on their own tab instead of cluttering the view. Rescans still cover every host regardless of the active tab.
 - `parent` displays the host indented beneath the named parent as a tree child. Children are grouped under their parent and sorted alphabetically among themselves, regardless of where they appear in the config. A `parent` that doesn't exist in the group, names itself, or is itself a child (one level of nesting only) logs a warning at startup — visible in the status bar and debug overlay (`d`) — and the host falls back to top-level display.
 - Startup also warns about duplicate host names within a group (they make `parent` references ambiguous) and duplicate IPs anywhere in the config (the same machine would be probed more than once). Duplicates are kept and still monitored.
 - A host is marked **Down** after two consecutive scans with no open ports, **Up** as soon as any port answers.
@@ -63,6 +64,7 @@ Note that hosts only reachable from a specific network (e.g. DET‑managed serve
 | Key | Action |
 |-----|--------|
 | ↑/k, ↓/j | Navigate hosts |
+| ←/h, →/l, Tab | Switch group tab |
 | r | Force full rescan |
 | d | Toggle debug overlay (internal state + event log) |
 | Shift-D | Clear the debug event log |

@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
         config_warnings.extend(group.organise());
     }
 
+    app.build_tabs();
     app.rebuild_rows();
 
     let host_count: usize = app.groups.iter().map(|g| g.hosts.len()).sum();
@@ -138,6 +139,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
                         KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
                         KeyCode::Down | KeyCode::Char('j') => app.next_row(),
                         KeyCode::Up | KeyCode::Char('k') => app.prev_row(),
+                        KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => app.next_tab(),
+                        KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => app.prev_tab(),
                         KeyCode::Char('r') => {
                             app.set_status("Rescanning...");
                             spawn_scan(app, &tx);
