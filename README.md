@@ -84,6 +84,7 @@ Each host is probed on: 53, 80, 88, 135, 389, 443, 445, 636, 2179, 3389, 4660, 5
 | 9100 / 631 | Print Server |
 | 80 / 443 | Web Server |
 | 5985 | WinRM |
+| 22 | SSH (fallback when nothing more specific matches) |
 
 ## Building for Windows from WSL
 

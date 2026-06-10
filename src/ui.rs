@@ -147,6 +147,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
                     "Hyper-V" => Style::default().fg(Color::Magenta),
                     "SCCM" => Style::default().fg(Color::Blue),
                     "NxWitness" => Style::default().fg(Color::Cyan),
+                    "SSH" => Style::default().fg(Color::Green),
                     _ => Style::default(),
                 };
 

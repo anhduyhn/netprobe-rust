@@ -107,6 +107,10 @@ impl Host {
             "Web"
         } else if has(5985) {
             "WinRM"
+        } else if has(22) {
+            // Low priority: only when nothing more specific matched (e.g. the
+            // Armis collectors, whose only honest port is SSH).
+            "SSH"
         } else {
             "—"
         }
