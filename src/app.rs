@@ -612,9 +612,10 @@ impl App {
     }
 
     /// Build the CSV snapshot text for ALL hosts (pure; no I/O).
+    /// Starts with a UTF-8 BOM so Excel decodes it as UTF-8 rather than ANSI.
     fn build_csv(&self) -> String {
         let mut out = String::from(
-            "group,host,ip,status,role,open_ports,latency_ms,last_seen,last_checked\n",
+            "\u{feff}group,host,ip,status,role,open_ports,latency_ms,last_seen,last_checked\n",
         );
         for group in &self.groups {
             for host in &group.hosts {
@@ -633,12 +634,18 @@ impl App {
                     .last_checked
                     .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
                     .unwrap_or_default();
+                // role_label() returns an em dash for "no role"; keep the CSV
+                // cell plain ASCII (empty) instead.
+                let role = match host.role_label() {
+                    "—" => "",
+                    other => other,
+                };
                 let fields = [
                     group.name.as_str(),
                     host.name.as_str(),
                     host.ip.as_str(),
                     host.status.label(),
-                    host.role_label(),
+                    role,
                     ports.as_str(),
                     latency.as_str(),
                     last_seen.as_str(),
@@ -851,9 +858,13 @@ mod tests {
         // Give the host multiple open ports so the field needs quoting.
         app.groups[0].hosts[0].open_ports = vec![80, 443];
         let csv = app.build_csv();
+        // Starts with a UTF-8 BOM so Excel reads it as UTF-8.
+        assert!(csv.starts_with('\u{feff}'));
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 2); // header + 1 host
-        assert!(lines[0].starts_with("group,host,ip,status,role,open_ports"));
+        assert!(lines[0]
+            .trim_start_matches('\u{feff}')
+            .starts_with("group,host,ip,status,role,open_ports"));
         // group name with a comma is quoted; ports joined with ';' (no comma,
         // so no quoting needed).
         assert!(lines[1].contains("\"Grp,A\""));
@@ -861,6 +872,17 @@ mod tests {
         assert!(!lines[1].contains("\"80;443\""));
         assert!(lines[1].contains("10.0.0.1"));
         assert!(lines[1].contains("up"));
+    }
+
+    #[test]
+    fn csv_no_role_is_empty_not_em_dash() {
+        // A host with no open ports has no inferred role.
+        let app = app_with(&[("G", &[("h1", "10.0.0.1", HostStatus::Unknown)])]);
+        let csv = app.build_csv();
+        assert!(!csv.contains('—'));
+        // ...,up/unknown,,<empty role>,... → an empty field between status and ports.
+        let data = csv.lines().nth(1).unwrap();
+        assert!(data.contains("unknown,,")); // status then empty role
     }
 
     #[test]
