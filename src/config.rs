@@ -29,6 +29,10 @@ pub struct Settings {
     /// every address, which otherwise makes shut-down hosts appear online.
     #[serde(default)]
     pub ports: Option<Vec<u16>>,
+    /// Tab to open on at startup: a group name or "All". A remembered last tab
+    /// (from the state file) takes precedence over this. When unset, opens "All".
+    #[serde(default)]
+    pub default_tab: Option<String>,
 }
 
 fn default_poll() -> u64 {

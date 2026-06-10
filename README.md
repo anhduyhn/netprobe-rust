@@ -22,6 +22,8 @@ Copy `config.toml.sample` to `config.toml` and edit:
 poll_interval = 30          # seconds between automatic rescans
 connect_timeout_ms = 2000   # TCP connect timeout per port
 max_concurrent_probes = 64  # max simultaneous TCP connects across the whole scan
+# ports = [22, 88, 135, 389, 445, 3389, 5985]   # optional: override the probed TCP ports (built-in default used if unset)
+# default_tab = "All"                            # optional: tab to open on (a group name or "All")
 
 [[group]]
 name = "Servers"
@@ -31,12 +33,16 @@ hosts = [
 ]
 ```
 
+The full list of settings: `poll_interval`, `connect_timeout_ms`, `max_concurrent_probes`, `ports` (see [Probed ports](#probed-ports-and-role-inference) and [Liveness false positives](#liveness-false-positives-intercepted-ports)), and `default_tab`.
+
 - Hosts are displayed alphabetically by name (case-insensitive) within each group, regardless of config order. Groups stay in config order.
 - A tab bar (one tab per group, plus **All**) lets you focus on a single group with ←/→ or Tab. The header up/down/unknown counts reflect the active tab, so groups that are expected to be unreachable from your current network (e.g. DET-managed hosts when you're on the curriculum network) can be kept on their own tab instead of cluttering the view. Rescans still cover every host regardless of the active tab.
 - `parent` displays the host indented beneath the named parent as a tree child. Children are grouped under their parent and sorted alphabetically among themselves, regardless of where they appear in the config. A `parent` that doesn't exist in the group, names itself, or is itself a child (one level of nesting only) logs a warning at startup — visible in the status bar and debug overlay (`d`) — and the host falls back to top-level display.
 - Startup also warns about duplicate host names within a group (they make `parent` references ambiguous) and duplicate IPs anywhere in the config (the same machine would be probed more than once). Duplicates are kept and still monitored.
 - A host is marked **Down** after two consecutive scans with no open ports, **Up** as soon as any port answers.
 - `ports` (optional, under `[settings]`) overrides the list of TCP ports probed on every host — used for both the up/down decision and role inference. When unset, a built-in default list is used. The startup banner prints the active list.
+- `default_tab` (optional, under `[settings]`) is the tab to open on — a group name or `"All"`. The last tab you were on is remembered across launches (stored in a `netprobe-state` file beside the executable) and takes precedence over `default_tab`.
+- Press `e` to write a CSV snapshot of all hosts (`netprobe-snapshot-<timestamp>.csv`) into the executable's folder; the status bar shows the path. Each export is a new timestamped file. (JSON is intentionally not supported — it would add a dependency; CSV opens directly in Excel.)
 
 ### Liveness false positives (intercepted ports)
 
@@ -65,11 +71,14 @@ Note that hosts only reachable from a specific network (e.g. DET‑managed serve
 |-----|--------|
 | ↑/k, ↓/j | Navigate hosts |
 | ←/h, →/l, Tab | Switch group tab |
+| / | Search: filter by name or IP (Enter applies, Esc clears) |
+| t | Triage: show only hosts that are not Up |
+| e | Export a CSV snapshot next to the executable |
 | r | Force full rescan |
 | d | Toggle debug overlay (internal state + event log) |
 | Shift-D | Clear the debug event log |
 | ? | Toggle help |
-| q / Esc | Quit |
+| q / Esc | Quit (Esc clears an active search first) |
 
 ## Probed ports and role inference
 

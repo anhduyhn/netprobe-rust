@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -6,6 +7,16 @@ use std::time::Instant;
 use chrono::{DateTime, Local};
 use ratatui::widgets::TableState;
 use tokio::sync::Semaphore;
+
+/// Filename (in the executable's own folder) used to remember the last tab.
+const STATE_FILE: &str = "netprobe-state";
+
+/// Input focus: normal navigation vs editing the search filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    Filter,
+}
 
 /// Monotonic source of stable per-host ids. Used to route async scan results
 /// to the right host regardless of position in the host vectors.
@@ -29,6 +40,15 @@ impl HostStatus {
             Self::Unknown => "?",
             Self::Up => "●",
             Self::Down => "✗",
+        }
+    }
+
+    /// Plain-text label, used in CSV export.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Up => "up",
+            Self::Down => "down",
         }
     }
 }
@@ -245,6 +265,18 @@ pub struct App {
     pub show_debug: bool,
     /// Ring buffer of recent internal events, newest last.
     pub debug_log: VecDeque<String>,
+    /// Folder the executable lives in; CSV snapshots + the state file go here.
+    pub base_dir: PathBuf,
+    /// When the most recent scan was kicked off (drives the idle countdown).
+    pub last_scan: Instant,
+    /// Normal navigation vs editing the search filter.
+    pub input_mode: InputMode,
+    /// Committed search filter (matches host name or ip, case-insensitive).
+    pub filter_query: String,
+    /// Filter text currently being edited (before Enter commits it).
+    pub filter_draft: String,
+    /// When true, only hosts that are not Up are shown.
+    pub triage: bool,
 }
 
 impl App {
@@ -277,7 +309,77 @@ impl App {
             active_tab: 0,
             show_debug: false,
             debug_log: VecDeque::with_capacity(DEBUG_LOG_CAP),
+            base_dir: resolve_base_dir(),
+            last_scan: Instant::now(),
+            input_mode: InputMode::Normal,
+            filter_query: String::new(),
+            filter_draft: String::new(),
+            triage: false,
         }
+    }
+
+    // ── Search filter ────────────────────────────────────────────────────
+
+    pub fn enter_filter(&mut self) {
+        self.filter_draft = self.filter_query.clone();
+        self.input_mode = InputMode::Filter;
+    }
+
+    /// Discard the in-progress edit, keep the previously committed filter.
+    pub fn cancel_filter(&mut self) {
+        self.filter_draft.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn commit_filter(&mut self) {
+        self.filter_query = self.filter_draft.trim().to_string();
+        self.input_mode = InputMode::Normal;
+        self.rebuild_rows();
+    }
+
+    /// Clear an active committed filter (used by Esc in Normal mode).
+    pub fn clear_filter(&mut self) {
+        self.filter_query.clear();
+        self.filter_draft.clear();
+        self.rebuild_rows();
+    }
+
+    pub fn push_filter_char(&mut self, c: char) {
+        self.filter_draft.push(c);
+        self.rebuild_rows();
+    }
+
+    pub fn pop_filter_char(&mut self) {
+        self.filter_draft.pop();
+        self.rebuild_rows();
+    }
+
+    /// The filter text in effect for display/matching: the live draft while
+    /// editing, otherwise the committed query.
+    pub fn effective_query(&self) -> &str {
+        if self.input_mode == InputMode::Filter {
+            &self.filter_draft
+        } else {
+            &self.filter_query
+        }
+    }
+
+    // ── Triage ───────────────────────────────────────────────────────────
+
+    pub fn toggle_triage(&mut self) {
+        self.triage = !self.triage;
+        self.rebuild_rows();
+    }
+
+    // ── Scan schedule ────────────────────────────────────────────────────
+
+    /// Seconds until the next periodic scan, or None while scanning.
+    pub fn seconds_until_next_scan(&self) -> Option<u64> {
+        if self.is_scanning {
+            return None;
+        }
+        let elapsed = self.last_scan.elapsed().as_secs();
+        Some(self.poll_interval.saturating_sub(elapsed))
     }
 
     /// Build the tab list ("All" + each group name). Call after groups load.
@@ -351,14 +453,38 @@ impl App {
             .find(|h| h.id == id)
     }
 
-    /// Rebuild the flat row list from groups. Call after any structural change.
+    /// Rebuild the flat row list from groups, applying the active tab, search
+    /// filter, and triage toggle. Call after any structural or filter change.
     pub fn rebuild_rows(&mut self) {
-        self.rows.clear();
+        // Snapshot the predicate inputs into locals so the loop borrows only
+        // self.groups (immutable) and self.rows (mutable) — disjoint fields.
+        let query = self.effective_query().trim().to_ascii_lowercase();
+        let triage = self.triage;
+        let active_tab = self.active_tab;
         // On a single-group tab the tab label already names the group, so the
         // header row is redundant; keep headers only on the "All" tab.
-        let show_headers = self.active_tab == 0;
+        let show_headers = active_tab == 0;
+
+        self.rows.clear();
         for (gi, group) in self.groups.iter().enumerate() {
-            if !(self.active_tab == 0 || self.active_tab == gi + 1) {
+            if !(active_tab == 0 || active_tab == gi + 1) {
+                continue;
+            }
+            let mut group_rows: Vec<TableRow> = Vec::new();
+            for (hi, host) in group.hosts.iter().enumerate() {
+                let matches_query = query.is_empty()
+                    || host.name.to_ascii_lowercase().contains(&query)
+                    || host.ip.to_ascii_lowercase().contains(&query);
+                let passes_triage = !triage || host.status != HostStatus::Up;
+                if matches_query && passes_triage {
+                    group_rows.push(TableRow::HostEntry {
+                        group_idx: gi,
+                        host_idx: hi,
+                    });
+                }
+            }
+            // Suppress a group whose hosts were all filtered out.
+            if group_rows.is_empty() {
                 continue;
             }
             if show_headers {
@@ -366,20 +492,27 @@ impl App {
                     name: group.name.clone(),
                 });
             }
-            for (hi, _host) in group.hosts.iter().enumerate() {
-                self.rows.push(TableRow::HostEntry {
-                    group_idx: gi,
-                    host_idx: hi,
-                });
-            }
+            self.rows.extend(group_rows);
         }
-        if self.table_state.selected().is_none() && !self.rows.is_empty() {
-            // Select the first host, not the group header.
+
+        self.clamp_selection();
+    }
+
+    /// Keep the selection on a real host row after the row set changes.
+    /// MUST run on every rebuild — otherwise a stale index can point past the
+    /// end (or at a header) and panic when `draw_table` indexes the host.
+    fn clamp_selection(&mut self) {
+        let valid = self
+            .table_state
+            .selected()
+            .and_then(|i| self.rows.get(i))
+            .is_some_and(|r| matches!(r, TableRow::HostEntry { .. }));
+        if !valid {
             let first_host = self
                 .rows
                 .iter()
                 .position(|r| matches!(r, TableRow::HostEntry { .. }));
-            self.table_state.select(first_host.or(Some(0)));
+            self.table_state.select(first_host);
         }
     }
 
@@ -447,6 +580,109 @@ impl App {
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
     }
+
+    // ── CSV export ───────────────────────────────────────────────────────
+
+    /// Write a snapshot of ALL hosts to a timestamped CSV in the exe's folder.
+    /// Returns the path written.
+    pub fn export_csv(&self) -> std::io::Result<PathBuf> {
+        let stamp = Local::now().format("%Y%m%d-%H%M%S");
+        let path = self.base_dir.join(format!("netprobe-snapshot-{stamp}.csv"));
+        std::fs::write(&path, self.build_csv())?;
+        Ok(path)
+    }
+
+    /// Build the CSV snapshot text for ALL hosts (pure; no I/O).
+    fn build_csv(&self) -> String {
+        let mut out = String::from(
+            "group,host,ip,status,role,open_ports,latency_ms,last_seen,last_checked\n",
+        );
+        for group in &self.groups {
+            for host in &group.hosts {
+                let ports = host
+                    .open_ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(";");
+                let latency = host.latency_ms.map(|m| m.to_string()).unwrap_or_default();
+                let last_seen = host
+                    .last_seen
+                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default();
+                let last_checked = host
+                    .last_checked
+                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default();
+                let fields = [
+                    group.name.as_str(),
+                    host.name.as_str(),
+                    host.ip.as_str(),
+                    host.status.label(),
+                    host.role_label(),
+                    ports.as_str(),
+                    latency.as_str(),
+                    last_seen.as_str(),
+                    last_checked.as_str(),
+                ];
+                let line = fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    // ── Tab persistence ──────────────────────────────────────────────────
+
+    fn state_path(&self) -> PathBuf {
+        self.base_dir.join(STATE_FILE)
+    }
+
+    /// Resolve the initial tab from the saved state file and config default.
+    pub fn restore_active_tab(&mut self, default_tab: Option<&str>) {
+        let saved = std::fs::read_to_string(self.state_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        self.active_tab = self.resolve_tab(saved.as_deref(), default_tab);
+    }
+
+    /// Pure precedence logic: saved last tab > config default_tab > "All" (0).
+    /// Any label that no longer matches a tab falls through to the next.
+    fn resolve_tab(&self, saved: Option<&str>, default_tab: Option<&str>) -> usize {
+        for label in [saved, default_tab].into_iter().flatten() {
+            if let Some(idx) = self.tabs.iter().position(|t| t.eq_ignore_ascii_case(label)) {
+                return idx;
+            }
+        }
+        0
+    }
+
+    /// Best-effort persist of the active tab label; never fails the caller.
+    pub fn save_active_tab(&self) {
+        if let Some(label) = self.tabs.get(self.active_tab) {
+            let _ = std::fs::write(self.state_path(), label);
+        }
+    }
+}
+
+/// The folder the executable lives in (CSV snapshots + state file go here),
+/// falling back to the current directory.
+fn resolve_base_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Quote a CSV field if it contains a comma, quote, or newline (RFC 4180).
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -510,6 +746,122 @@ mod tests {
         assert!(warnings[0].contains("NOPE"));
         assert!(!g.hosts[1].is_child);
         assert_eq!(names(&g), vec!["HOST1", "VM1"]);
+    }
+
+    fn app_with(groups: &[(&str, &[(&str, &str, HostStatus)])]) -> App {
+        let mut app = App::new(30, 2000, 64, vec![80]);
+        for (gname, hosts) in groups {
+            let hs = hosts
+                .iter()
+                .map(|(n, ip, st)| {
+                    let mut h = Host::from_config(n, ip);
+                    h.status = *st;
+                    h
+                })
+                .collect();
+            app.groups.push(Group {
+                name: (*gname).into(),
+                hosts: hs,
+            });
+        }
+        app.build_tabs();
+        app.rebuild_rows();
+        app
+    }
+
+    fn host_row_count(app: &App) -> usize {
+        app.rows
+            .iter()
+            .filter(|r| matches!(r, TableRow::HostEntry { .. }))
+            .count()
+    }
+
+    #[test]
+    fn filter_matches_name_or_ip_case_insensitively() {
+        let mut app = app_with(&[(
+            "G",
+            &[
+                ("KP-DC01", "10.0.0.1", HostStatus::Up),
+                ("KP-PS01", "10.0.0.2", HostStatus::Up),
+                ("CC-DNS", "10.0.0.99", HostStatus::Up),
+            ],
+        )]);
+        app.filter_query = "dc".into();
+        app.rebuild_rows();
+        assert_eq!(host_row_count(&app), 1); // KP-DC01
+
+        app.filter_query = "10.0.0.".into();
+        app.rebuild_rows();
+        assert_eq!(host_row_count(&app), 3); // all by ip
+
+        app.filter_query = ".99".into();
+        app.rebuild_rows();
+        assert_eq!(host_row_count(&app), 1); // CC-DNS by ip
+    }
+
+    #[test]
+    fn triage_hides_up_hosts_and_suppresses_empty_groups() {
+        let mut app = app_with(&[
+            (
+                "AllUp",
+                &[("a", "10.0.0.1", HostStatus::Up), ("b", "10.0.0.2", HostStatus::Up)],
+            ),
+            (
+                "HasDown",
+                &[("c", "10.0.0.3", HostStatus::Down), ("d", "10.0.0.4", HostStatus::Up)],
+            ),
+        ]);
+        app.triage = true;
+        app.rebuild_rows();
+        // Only the Down host 'c' remains; the all-Up group's header is suppressed.
+        assert_eq!(host_row_count(&app), 1);
+        let headers = app
+            .rows
+            .iter()
+            .filter(|r| matches!(r, TableRow::GroupHeader { .. }))
+            .count();
+        assert_eq!(headers, 1); // only "HasDown"
+    }
+
+    #[test]
+    fn csv_export_has_header_row_per_host_and_quotes_ports() {
+        let mut app = app_with(&[(
+            "Grp,A",
+            &[("h1", "10.0.0.1", HostStatus::Up)],
+        )]);
+        // Give the host multiple open ports so the field needs quoting.
+        app.groups[0].hosts[0].open_ports = vec![80, 443];
+        let csv = app.build_csv();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 2); // header + 1 host
+        assert!(lines[0].starts_with("group,host,ip,status,role,open_ports"));
+        // group name with a comma is quoted; ports joined with ';' (no comma,
+        // so no quoting needed).
+        assert!(lines[1].contains("\"Grp,A\""));
+        assert!(lines[1].contains("80;443"));
+        assert!(!lines[1].contains("\"80;443\""));
+        assert!(lines[1].contains("10.0.0.1"));
+        assert!(lines[1].contains("up"));
+    }
+
+    #[test]
+    fn csv_field_quotes_only_when_needed() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn resolve_tab_precedence_and_fallback() {
+        let mut app = App::new(30, 2000, 64, vec![80]);
+        app.tabs = ["All", "DET", "Infra"].iter().map(|s| s.to_string()).collect();
+
+        assert_eq!(app.resolve_tab(Some("Infra"), Some("DET")), 2); // saved wins
+        assert_eq!(app.resolve_tab(None, Some("DET")), 1); // default
+        assert_eq!(app.resolve_tab(Some("infra"), None), 2); // case-insensitive
+        assert_eq!(app.resolve_tab(Some("Gone"), Some("DET")), 1); // invalid saved → default
+        assert_eq!(app.resolve_tab(Some("Gone"), Some("AlsoGone")), 0); // → All
+        assert_eq!(app.resolve_tab(None, None), 0); // → All
     }
 
     #[test]

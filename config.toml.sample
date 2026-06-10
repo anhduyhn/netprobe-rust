@@ -17,6 +17,9 @@ max_concurrent_probes = 64  # max simultaneous TCP connects; lower to 16-32 on a
 #   Override the probed TCP ports (liveness + role detection). Defaults to a
 #   built-in list. Drop a port here if a firewall accepts it for every address
 #   (e.g. an intercepted TCP/53) and makes shut-down hosts look online.
+# default_tab = "All"
+#   Tab to open on at startup: a group name (see [[group]] names below) or "All".
+#   The last tab you were on is remembered between launches and wins over this.
 
 [[group]]
 name = "Servers"

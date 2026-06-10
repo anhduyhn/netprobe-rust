@@ -3,3 +3,5 @@
 *:Zone.Identifier
 config.toml
 *.password
+netprobe-state
+netprobe-snapshot-*.csv

@@ -77,6 +77,7 @@ async fn main() -> Result<()> {
     }
 
     app.build_tabs();
+    app.restore_active_tab(cfg.settings.default_tab.as_deref());
     app.rebuild_rows();
 
     let host_count: usize = app.groups.iter().map(|g| g.hosts.len()).sum();
@@ -127,7 +128,6 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
     spawn_scan(app, &tx);
 
     let poll_interval = Duration::from_secs(app.poll_interval);
-    let mut last_scan = tokio::time::Instant::now();
 
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
@@ -135,31 +135,59 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-                        KeyCode::Down | KeyCode::Char('j') => app.next_row(),
-                        KeyCode::Up | KeyCode::Char('k') => app.prev_row(),
-                        KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => app.next_tab(),
-                        KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => app.prev_tab(),
-                        KeyCode::Char('r') => {
-                            app.set_status("Rescanning...");
-                            spawn_scan(app, &tx);
-                            last_scan = tokio::time::Instant::now();
+                    if app.input_mode == app::InputMode::Filter {
+                        // While editing the filter, all keys edit the query.
+                        match key.code {
+                            KeyCode::Esc => app.cancel_filter(),
+                            KeyCode::Enter => app.commit_filter(),
+                            KeyCode::Backspace => app.pop_filter_char(),
+                            KeyCode::Char(c) => app.push_filter_char(c),
+                            _ => {}
                         }
-                        KeyCode::Char('?') => app.show_help = !app.show_help,
-                        KeyCode::Char('d') => {
-                            app.show_debug = !app.show_debug;
-                            app.log_debug(if app.show_debug {
-                                "debug overlay enabled"
-                            } else {
-                                "debug overlay disabled"
-                            });
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') => app.should_quit = true,
+                            KeyCode::Esc => {
+                                // Esc clears an active search first; quits only
+                                // when there's no filter to clear.
+                                if !app.filter_query.is_empty() {
+                                    app.clear_filter();
+                                } else {
+                                    app.should_quit = true;
+                                }
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => app.next_row(),
+                            KeyCode::Up | KeyCode::Char('k') => app.prev_row(),
+                            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => app.next_tab(),
+                            KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => app.prev_tab(),
+                            KeyCode::Char('/') => app.enter_filter(),
+                            KeyCode::Char('t') => app.toggle_triage(),
+                            KeyCode::Char('e') => match app.export_csv() {
+                                Ok(path) => app.set_status(format!("Exported {}", path.display())),
+                                Err(err) => {
+                                    app.set_status(format!("Export failed: {err}"));
+                                    app.log_debug(format!("export error: {err}"));
+                                }
+                            },
+                            KeyCode::Char('r') => {
+                                app.set_status("Rescanning...");
+                                spawn_scan(app, &tx);
+                            }
+                            KeyCode::Char('?') => app.show_help = !app.show_help,
+                            KeyCode::Char('d') => {
+                                app.show_debug = !app.show_debug;
+                                app.log_debug(if app.show_debug {
+                                    "debug overlay enabled"
+                                } else {
+                                    "debug overlay disabled"
+                                });
+                            }
+                            KeyCode::Char('D') => {
+                                // Shift-D clears the debug log.
+                                app.debug_log.clear();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char('D') => {
-                            // Shift-D clears the debug log.
-                            app.debug_log.clear();
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -231,12 +259,12 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
         }
 
         // Periodic rescan.
-        if !app.is_scanning && last_scan.elapsed() >= poll_interval {
+        if !app.is_scanning && app.last_scan.elapsed() >= poll_interval {
             spawn_scan(app, &tx);
-            last_scan = tokio::time::Instant::now();
         }
 
         if app.should_quit {
+            app.save_active_tab();
             return Ok(());
         }
     }
@@ -247,6 +275,7 @@ fn spawn_scan(app: &mut App, tx: &mpsc::UnboundedSender<ScanEvent>) {
     app.current_scan += 1;
     let scan_id = app.current_scan;
     app.is_scanning = true;
+    app.last_scan = Instant::now();
     let connect_timeout = Duration::from_millis(app.connect_timeout_ms);
 
     // Results route back by stable host id, so ordering of the host vectors

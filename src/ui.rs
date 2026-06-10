@@ -1,12 +1,19 @@
+use chrono::Local;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
+    widgets::{
+        Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Table, Tabs, Wrap,
+    },
     Frame,
 };
 
-use crate::app::{App, HostStatus, TableRow};
+use crate::app::{App, HostStatus, InputMode, TableRow};
+
+/// Braille spinner frames (render fine in Windows Terminal).
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -51,14 +58,13 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let (up, down, unknown) = app.counts();
     let total = app.visible_host_count();
-    let scan_text = if app.is_scanning { " scanning..." } else { "" };
     let poll_text = app
         .last_poll
         .map(|t| t.format(" │ %H:%M:%S").to_string())
         .unwrap_or_default();
     let status = app.status_message.as_deref().unwrap_or("");
 
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             " netprobe ",
             Style::default()
@@ -72,12 +78,54 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
         Span::styled(format!("? {unknown}"), Style::default().fg(Color::DarkGray)),
         Span::styled(poll_text, Style::default().fg(Color::DarkGray)),
-        Span::styled(scan_text, Style::default().fg(Color::Yellow)),
-        Span::styled(format!(" {status}"), Style::default().fg(Color::Yellow)),
-    ]);
+    ];
+
+    // Scanning spinner, or an idle countdown to the next scan.
+    if app.is_scanning {
+        let frame_idx = (Local::now().timestamp_millis() / 100) as usize % SPINNER.len();
+        spans.push(Span::styled(
+            format!(" {} scanning", SPINNER[frame_idx]),
+            Style::default().fg(Color::Yellow),
+        ));
+    } else if let Some(secs) = app.seconds_until_next_scan() {
+        spans.push(Span::styled(
+            format!(" │ next scan {secs}s"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    // Search filter indicator (live draft while editing, committed otherwise).
+    if app.input_mode == InputMode::Filter {
+        spans.push(Span::styled(
+            format!(" │ /{}▏", app.effective_query()),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if !app.filter_query.is_empty() {
+        spans.push(Span::styled(
+            format!(" │ /{}", app.filter_query),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    if app.triage {
+        spans.push(Span::styled(
+            " │ [triage]",
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+
+    if !status.is_empty() {
+        spans.push(Span::styled(
+            format!(" {status}"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
 
     let block = Block::default().borders(Borders::ALL);
-    frame.render_widget(Paragraph::new(line).block(block), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
 }
 
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -191,6 +239,24 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
+
+    // Scrollbar — only when the list is taller than the viewport. Borders (2)
+    // and the header row (1) don't hold data rows.
+    let visible_rows = area.height.saturating_sub(3) as usize;
+    if app.rows.len() > visible_rows {
+        let mut sb_state = ScrollbarState::new(app.rows.len()).position(app.table_state.offset());
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut sb_state,
+        );
+    }
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
@@ -235,7 +301,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         None => vec![Line::from("Select a host")],
     };
 
-    let keybinds = " ↑↓ nav │ ←→ tab │ r rescan │ d debug │ ? help │ q quit ";
+    let keybinds = " ↑↓ nav │ ←→ tab │ / find │ t triage │ e export │ r rescan │ ? help │ q quit ";
     let block = Block::default().borders(Borders::ALL).title(keybinds);
     frame.render_widget(
         Paragraph::new(content)
@@ -311,11 +377,14 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(" ↑/k, ↓/j    Navigate hosts"),
         Line::from(" ←/h, →/l    Switch group tab (All + one per group)"),
         Line::from(" Tab/Shift-Tab  Switch group tab"),
+        Line::from(" /           Search: filter by name or IP (Enter apply, Esc clear)"),
+        Line::from(" t           Triage: show only hosts that are not Up"),
+        Line::from(" e           Export a CSV snapshot next to the executable"),
         Line::from(" r           Force rescan all hosts"),
         Line::from(" d           Toggle debug overlay (internal state + event log)"),
         Line::from(" Shift-D     Clear the debug event log"),
         Line::from(" ?           Toggle this help"),
-        Line::from(" q / Esc     Quit"),
+        Line::from(" q / Esc     Quit (Esc clears an active search first)"),
         Line::from(""),
         Line::from(Span::styled(
             " Config",
@@ -324,6 +393,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(" Edit config.toml to add/remove hosts and groups."),
         Line::from(" Roles are inferred from open ports (e.g. 88+389 = DC)."),
+        Line::from(" default_tab opens a chosen tab; the last tab is remembered."),
     ];
 
     let block = Block::default()
