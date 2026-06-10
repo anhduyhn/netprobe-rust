@@ -258,6 +258,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Result<(
             }
         }
 
+        // Auto-clear a stale status message (e.g. the "Exported …" confirmation).
+        app.expire_status();
+
         // Periodic rescan.
         if !app.is_scanning && app.last_scan.elapsed() >= poll_interval {
             spawn_scan(app, &tx);

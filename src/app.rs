@@ -25,6 +25,9 @@ static NEXT_HOST_ID: AtomicU64 = AtomicU64::new(1);
 /// Max number of debug log lines retained in the ring buffer.
 const DEBUG_LOG_CAP: usize = 200;
 
+/// How long a transient status-bar message stays before auto-clearing.
+const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(6);
+
 // ── Host status ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +260,8 @@ pub struct App {
     pub scan_deadline: Option<Instant>,
     pub show_help: bool,
     pub status_message: Option<String>,
+    /// When the current status message was set (for auto-expiry).
+    pub status_set_at: Option<Instant>,
     /// Tab labels: "All" followed by each group name.
     pub tabs: Vec<String>,
     /// Active tab: 0 = All, otherwise group index + 1.
@@ -305,6 +310,7 @@ impl App {
             scan_deadline: None,
             show_help: false,
             status_message: None,
+            status_set_at: None,
             tabs: vec!["All".to_string()],
             active_tab: 0,
             show_debug: false,
@@ -433,6 +439,7 @@ impl App {
         self.last_poll = Some(Local::now());
         if self.status_message.as_deref() == Some("Rescanning...") {
             self.status_message = None;
+            self.status_set_at = None;
         }
     }
 
@@ -579,6 +586,18 @@ impl App {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+        self.status_set_at = Some(Instant::now());
+    }
+
+    /// Clear the status message once it has been shown long enough. Call each
+    /// loop tick.
+    pub fn expire_status(&mut self) {
+        if let Some(t) = self.status_set_at {
+            if t.elapsed() >= STATUS_TTL {
+                self.status_message = None;
+                self.status_set_at = None;
+            }
+        }
     }
 
     // ── CSV export ───────────────────────────────────────────────────────
