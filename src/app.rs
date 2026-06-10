@@ -28,7 +28,7 @@ impl HostStatus {
         match self {
             Self::Unknown => "?",
             Self::Up => "●",
-            Self::Down => "✖",
+            Self::Down => "✗",
         }
     }
 }

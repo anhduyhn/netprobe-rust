@@ -68,7 +68,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(format!("│ {total} hosts │ ")),
         Span::styled(format!("● {up}"), Style::default().fg(Color::Green)),
         Span::raw(" "),
-        Span::styled(format!("✖ {down}"), Style::default().fg(Color::Red)),
+        Span::styled(format!("✗ {down}"), Style::default().fg(Color::Red)),
         Span::raw(" "),
         Span::styled(format!("? {unknown}"), Style::default().fg(Color::DarkGray)),
         Span::styled(poll_text, Style::default().fg(Color::DarkGray)),
