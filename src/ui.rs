@@ -241,10 +241,15 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.table_state);
 
     // Scrollbar — only when the list is taller than the viewport. Borders (2)
-    // and the header row (1) don't hold data rows.
+    // and the header row (1) don't hold data rows. The thumb tracks the
+    // selected row so it descends as you move down the list, and is sized to
+    // the visible window.
     let visible_rows = area.height.saturating_sub(3) as usize;
     if app.rows.len() > visible_rows {
-        let mut sb_state = ScrollbarState::new(app.rows.len()).position(app.table_state.offset());
+        let pos = app.table_state.selected().unwrap_or(0);
+        let mut sb_state = ScrollbarState::new(app.rows.len())
+            .viewport_content_length(visible_rows)
+            .position(pos);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None);
